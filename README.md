@@ -1,6 +1,6 @@
 # Docker MySQL Node.js React.js App
 
-![App]( )
+![App](https://github.com/prasad0808/3tier_app/blob/main/App.png)
 
 "Docker MySQL Node.js React.js App" is a comprehensive demonstration repository showcasing the capabilities of Docker and Docker Compose. With a focus on simplicity and efficiency, this project illustrates the integration of Docker containers for deploying a full-stack application.
 
