@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   db: # Defines the 'db' service for MySQL database
-    image: mysql:8.0 # Uses the MySQL 8.0 Docker image
+    image: mysql:7.0 # Uses the MySQL 8.0 Docker image
     environment: # Sets environment variables for the database configuration
       - MYSQL_DATABASE=appdb # Specifies the name of the database
       - MYSQL_PASSWORD=pass123 # Sets the password for the MySQL user
