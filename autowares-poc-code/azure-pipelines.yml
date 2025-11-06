@@ -1,0 +1,200 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+
+variables:
+  # Edit or set these in pipeline UI / variable group
+  SERVICE_NAME: spring-app
+  SERVICE_PATH: "."                      # path to the service in repo
+  ACR_NAME: myPetclinicACR               # ACR name (no .azurecr.io)
+  ACR_LOGIN_SERVER: $(ACR_NAME).azurecr.io
+  MAVEN_POM: "$(SERVICE_PATH)/pom.xml"
+  MAVEN_JDK_VERSION: '1.17'              # JDK version for Maven task
+  SONAR_HOST_URL: ""                     # set in pipeline variables if using Sonar
+  SONAR_TOKEN: ""                        # set as secret if using Sonar
+  SONAR_PROJECT_KEY: "spring-petclinic"  # change as needed
+  IMAGE_REPOSITORY: $(ACR_LOGIN_SERVER)/$(SERVICE_NAME)
+
+stages:
+- stage: CI
+  displayName: CI: code scan, build, image scan, push to ACR
+  jobs:
+  - job: BuildAndScan
+    displayName: Build & Scan
+    pool:
+      vmImage: ubuntu-latest
+
+    steps:
+    - task: Checkout@1
+      displayName: Checkout
+      inputs:
+        fetchDepth: 0
+
+    # ----------------------
+    # Generate Image Tag
+    # ----------------------
+    - script: |
+        set -euo pipefail
+        echo "##[group]Generate image tag"
+        SHORT_SHA=$(git rev-parse --short=7 HEAD || echo "nosha")
+        echo "SHORT_SHA=$SHORT_SHA"
+        # Query ACR for latest tag (if any)
+        LATEST_TAG=$(az acr repository show-manifests --name $(ACR_NAME) --repository $(SERVICE_NAME) --orderby time_desc --top 1 --query "[0].tags[0]" -o tsv 2>/dev/null || echo "")
+        echo "LATEST_TAG='$LATEST_TAG'"
+        if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "None" ] || [ "$LATEST_TAG" = "null" ]; then
+          BASE_VERSION="1.0.0"
+        else
+          if [[ $LATEST_TAG =~ ^([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+            BASE_VERSION="${BASH_REMATCH[1]}"
+          elif [[ $LATEST_TAG =~ ^([0-9]+\.[0-9]+\.[0-9]+)-.*$ ]]; then
+            BASE_VERSION="${BASH_REMATCH[1]}"
+          else
+            BASE_VERSION="1.0.0"
+          fi
+        fi
+        IFS='.' read -r major minor patch <<< "$BASE_VERSION"
+        major=${major:-1}; minor=${minor:-0}; patch=${patch:-0}
+        NEXT_PATCH=$((patch + 1))
+        VERSION="${major}.${minor}.${NEXT_PATCH}"
+        IMAGE_TAG="${VERSION}-${SHORT_SHA}"
+        echo "IMAGE_TAG=$IMAGE_TAG"
+        echo "##vso[task.setvariable variable=IMAGE_TAG]$IMAGE_TAG"
+        echo "##vso[task.setvariable variable=APP_VERSION]$VERSION"
+        echo "##[endgroup]"
+      displayName: Generate image tag
+      env:
+        # ensure az CLI can work if using service principal env vars (optional)
+        AZURE_DEVOPS_EXT_AZURE_RM_SERVICE_PRINCIPAL_KEY: $(AZURE_SERVICE_PRINCIPAL_SECRET)
+
+    # ----------------------
+    # SonarQube (Maven)
+    # ----------------------
+    - script: |
+        set -euo pipefail
+        echo "##[group]Sonar analysis (maven)"
+        cd $(SERVICE_PATH)
+        if [ -n "$(SONAR_TOKEN)" ] && [ -n "$(SONAR_HOST_URL)" ]; then
+          mvn -B org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
+            -Dsonar.host.url=$(SONAR_HOST_URL) \
+            -Dsonar.login=$(SONAR_TOKEN) \
+            -Dsonar.projectKey=$(SONAR_PROJECT_KEY) \
+            -Dsonar.projectVersion=$(APP_VERSION)
+        else
+          echo "SONAR_TOKEN or SONAR_HOST_URL not set — skipping Sonar analysis"
+        fi
+        echo "##[endgroup]"
+      displayName: SonarQube code analysis
+      continueOnError: true
+
+    # ----------------------
+    # OWASP Dependency Check (docker image)
+    # ----------------------
+    - script: |
+        set -euo pipefail
+        echo "##[group]OWASP Dependency-Check"
+        mkdir -p $(Build.ArtifactStagingDirectory)/dependency-check-report
+        cd $(SERVICE_PATH)
+        docker run --rm -v "$(pwd):/src" -v "$(Build.ArtifactStagingDirectory)/dependency-check-report:/report" owasp/dependency-check:latest \
+          --project $(SERVICE_NAME) --scan /src --format ALL --out /report --disableOssIndex --enableExperimental || true
+        echo "##[endgroup]"
+      displayName: OWASP Dependency Check
+      continueOnError: true
+
+    - task: PublishPipelineArtifact@1
+      displayName: Publish OWASP reports
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/dependency-check-report'
+        artifact: 'dependency-check-report'
+
+    # ----------------------
+    # Maven package -> produce jar
+    # ----------------------
+    - task: Maven@3
+      displayName: Maven package
+      inputs:
+        mavenPomFile: '$(MAVEN_POM)'
+        goals: 'clean package'
+        options: '-DskipTests=false'
+        javaHomeOption: 'JDKVersion'
+        jdkVersionOption: '$(MAVEN_JDK_VERSION)'
+        publishJUnitResults: true
+
+    # ----------------------
+    # Build Docker image locally
+    # ----------------------
+    - script: |
+        set -euo pipefail
+        echo "##[group]Docker build"
+        docker build --no-cache -t $(SERVICE_NAME):$(IMAGE_TAG) $(SERVICE_PATH) \
+          --build-arg VERSION=$(APP_VERSION) --build-arg COMMIT_SHA=$(Build.SourceVersion)
+        docker images | grep $(SERVICE_NAME) || true
+        echo "##[endgroup]"
+      displayName: Build Docker image
+
+    # ----------------------
+    # Trivy image scans
+    # ----------------------
+    - script: |
+        set -euo pipefail
+        echo "##[group]Trivy scans"
+        mkdir -p $(Build.ArtifactStagingDirectory)/trivy-reports
+        docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --severity HIGH,CRITICAL --format table --output /tmp/trivy-table.txt $(SERVICE_NAME):$(IMAGE_TAG) || true
+        docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --severity HIGH,CRITICAL --format json --output /tmp/trivy.json $(SERVICE_NAME):$(IMAGE_TAG) || true
+        docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --severity HIGH,CRITICAL --format sarif --output /tmp/trivy.sarif $(SERVICE_NAME):$(IMAGE_TAG) || true
+        mv /tmp/trivy* $(Build.ArtifactStagingDirectory)/trivy-reports/ || true
+        echo "##[endgroup]"
+      displayName: Trivy image scans
+      continueOnError: true
+
+    - task: PublishPipelineArtifact@1
+      displayName: Publish Trivy reports
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/trivy-reports'
+        artifact: 'trivy-reports'
+
+    # ----------------------
+    # Login to ACR and push image
+    # ----------------------
+    - task: AzureCLI@2
+      displayName: Login to ACR and push image
+      inputs:
+        azureSubscription: '<YOUR-AZURE-SERVICE-CONNECTION>'   # replace with your Azure DevOps service connection name
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+          az acr login --name $(ACR_NAME)
+          docker tag $(SERVICE_NAME):$(IMAGE_TAG) $(IMAGE_REPOSITORY):$(IMAGE_TAG)
+          docker tag $(SERVICE_NAME):$(IMAGE_TAG) $(IMAGE_REPOSITORY):$(APP_VERSION) || true
+          docker push $(IMAGE_REPOSITORY):$(IMAGE_TAG)
+          docker push $(IMAGE_REPOSITORY):$(APP_VERSION) || true
+          echo "##vso[task.setvariable variable=IMAGE_FULL_TAG]$(IMAGE_REPOSITORY):$(IMAGE_TAG)"
+      env:
+        AZURE_DEVOPS_EXT_AZURE_RM_SERVICE_PRINCIPAL_KEY: $(AZURE_SERVICE_PRINCIPAL_SECRET)
+
+    # ----------------------
+    # Cleanup local images
+    # ----------------------
+    - script: |
+        docker rmi $(SERVICE_NAME):$(IMAGE_TAG) 2>/dev/null || true
+        docker image prune -f || true
+      displayName: Cleanup local docker images
+
+    # ----------------------
+    # Publish small summary artifact (optional)
+    # ----------------------
+    - script: |
+        echo "IMAGE_FULL_TAG=$(IMAGE_FULL_TAG)" > $(Build.ArtifactStagingDirectory)/image-info.txt || true
+      displayName: Write image info
+
+    - task: PublishPipelineArtifact@1
+      displayName: Publish image info
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/image-info.txt'
+        artifact: 'image-info'

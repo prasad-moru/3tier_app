@@ -1,0 +1,70 @@
+replicaCount: 1
+
+image:
+  repository: "<ACR_NAME>.azurecr.io/spring-app"   # <-- replace with your ACR repository
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: false
+  # If using nginx ingress or Azure Application Gateway ingress, configure host and tls
+  hosts:
+    - host: petclinic.example.com
+      paths:
+        - /
+  tls: []
+  annotations: {}
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+livenessProbe:
+  enabled: true
+  httpGet:
+    path: /actuator/health
+    port: 8080
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: true
+  httpGet:
+    path: /actuator/health
+    port: 8080
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+env: []
+# Example:
+# env:
+#  - name: SPRING_PROFILES_ACTIVE
+#    value: prod
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+imagePullSecrets: []
+# Example to use image pull secret:
+# imagePullSecrets:
+#  - name: acr-secret
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 50

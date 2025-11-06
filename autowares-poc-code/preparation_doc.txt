@@ -1,0 +1,25 @@
+hello i need your help on setting up Azure devops pipeline automation for java spring boot application 
+i have created pipeline but i want to know what how to configure and integrate tools. 
+here in this Azure devops pipeline. i want to create 
+stage_1
+ i have created azure acr registry as of now it is a public one. 
+ get the container image tag and prepare a semantic version increment of image tag.
+ after version use commit id eg: service_name:1.0.0-F98E6785 like this.   
+
+stage_2:
+ scan code with Sonarqube as of now i am using company https://sonarqube.cognitivzen.com
+ i need guidandance for integrating with Azure Devops pipelines.
+
+stage_3:
+   Valnurability scan with Owsap Dependency Check. 
+   if there is any feature for kept reports into artifacts. please provide that suggestion. 
+stage_4:
+  build Container Image and add tag of the Azure ACR container registry repo name.
+stage_5:
+  scan created Image with Trivy Scan and kept results into artifacts. and shows reports deatils into Summary section. 
+stage_6:
+  publish Container Image to ACR
+
+I am having doubts about Azure proivide or Self hosted Runners which is i need to use?i have already created pipeline can you have look into that. and also i will provide github repo here. 
+         
+   

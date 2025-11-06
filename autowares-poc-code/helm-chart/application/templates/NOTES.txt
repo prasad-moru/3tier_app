@@ -1,0 +1,20 @@
+1. Get application URL by running these commands:
+   kubectl get pods -l app={{ include "petclinic.fullname" . }}
+   kubectl get svc {{ include "petclinic.fullname" . }}
+
+2. If you enabled ingress and created DNS, visit http://<your-host>/
+
+3. If your AKS cluster is attached to ACR via `--attach-acr`, you don't need an imagePullSecret.
+   Otherwise create a docker-registry secret and set values.imagePullSecrets:
+     kubectl create secret docker-registry acr-secret \
+       --docker-server=<ACR_LOGIN_SERVER> \
+       --docker-username=<SP_APP_ID_OR_USERNAME> \
+       --docker-password=<SP_PASSWORD_OR_TOKEN> \
+       --docker-email=you@example.com
+
+   Then in values.yaml:
+     imagePullSecrets:
+       - name: acr-secret
+
+4. To upgrade image tag:
+   helm upgrade petclinic ./petclinic -n myns --set image.tag=1.2.3
